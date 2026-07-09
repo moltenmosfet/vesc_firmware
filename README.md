@@ -1,12 +1,52 @@
-# VESC firmware
+# VESC firmware — Molten MOSFET dyno fork
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Travis CI Status](https://travis-ci.com/vedderb/bldc.svg?branch=master)](https://travis-ci.com/vedderb/bldc)
-[![Codacy Badge](https://api.codacy.com/project/badge/Grade/75e90ffbd46841a3a7be2a9f7a94c242)](https://www.codacy.com/app/vedderb/bldc?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=vedderb/bldc&amp;utm_campaign=Badge_Grade)
-[![Contributors](https://img.shields.io/github/contributors/vedderb/bldc.svg)](https://github.com/vedderb/bldc/graphs/contributors)
-[![Watchers](https://img.shields.io/github/watchers/vedderb/bldc.svg)](https://github.com/vedderb/bldc/watchers)
-[![Stars](https://img.shields.io/github/stars/vedderb/bldc.svg)](https://github.com/vedderb/bldc/stargazers)
-[![Forks](https://img.shields.io/github/forks/vedderb/bldc.svg)](https://github.com/vedderb/bldc/network/members)
+
+This is the **Molten MOSFET** fork of [vedderb/bldc](https://github.com/vedderb/bldc),
+the VESC motor-controller firmware. It runs the absorber drive of a custom EUC
+dynamometer: a salvaged Nissan Leaf EM57 traction motor, belt-coupled to the roller
+and driven as a four-quadrant load by a VESC-derivative SiC inverter.
+
+## Why a fork
+
+The dyno needs one capability stock VESC firmware doesn't have:
+
+**d-axis dissipation braking.** During absorption tests the rig recovers up to tens of
+kW from the device under test. Instead of dumping that energy into a resistor bank
+through a brake chopper, it is burned inside the absorber motor's own windings:
+controlled d-axis current injection produces near-zero torque but real I²R heat,
+which the motor's water jacket carries away. The firmware side of this is a
+dissipation mode — a commanded d-axis current wrapped in ramping, a refresh-or-decay
+watchdog, and current/thermal clamps. Torque (q-axis) control keeps priority at all
+times; dissipation only ever takes the leftover current budget.
+
+## Fork design rules
+
+- **Runtime control is native VESC CAN.** New features get a CAN frame first; COMM
+  packets are added only for bench/serial use.
+- **No `mcconf`/`appconf` layout changes.** The fork stays connectable and
+  configurable with stock VESC Tool; feature limits travel in the commands themselves.
+- **Every new actuator command auto-expires.** Refresh-or-decay semantics, cleared on
+  fault, motor release, and comms timeout — same philosophy as the stock off-delay
+  current commands.
+
+## Branches & status
+
+| Branch | Purpose | Status |
+|---|---|---|
+| `master` | Tracks upstream `vedderb/bldc` master | clean mirror |
+| `feature/d-axis-dissipation` | d-axis dissipation braking mode | in development |
+
+The host-side driver lives in the companion fork
+[moltenmosfet/PyVESC](https://github.com/moltenmosfet/PyVESC), which speaks both the
+native CAN protocol and COMM, including the commands added here.
+
+---
+
+*Everything below is the upstream VESC firmware README (build instructions apply
+unchanged to this fork).*
+
+# VESC firmware
 
 An open source motor controller firmware.
 
