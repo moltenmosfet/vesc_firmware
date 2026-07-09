@@ -229,8 +229,10 @@ static THD_FUNCTION(timeout_thread, arg) {
 			mc_interface_unlock();
 			mc_interface_select_motor_thread(1);
 			mc_interface_set_brake_current(timeout_brake_current);
+			mc_interface_set_id_dissipate(0.0, 0.0);
 			mc_interface_select_motor_thread(2);
 			mc_interface_set_brake_current(timeout_brake_current);
+			mc_interface_set_id_dissipate(0.0, 0.0);
 
 			if (kill_sw) {
 				mc_interface_ignore_input_both(20);

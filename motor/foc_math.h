@@ -150,6 +150,11 @@ typedef struct {
 	float m_i_fw_set;
 	float m_i_fw_override;
 	float m_current_off_delay;
+	// Molten MOSFET: d-axis dissipation injection (winding-heat energy dump).
+	// Magnitudes (A); applied as negative id. See mcpwm_foc_set_id_dissipate().
+	float m_id_diss_set;       // commanded dissipation current
+	float m_id_diss_now;       // ramped current actually injected
+	float m_id_diss_off_delay; // command validity countdown (s); 0 -> decay
 	float m_openloop_speed;
 	float m_openloop_phase;
 	foc_pwm_mode m_pwm_mode;

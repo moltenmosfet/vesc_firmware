@@ -820,6 +820,7 @@ void mcpwm_foc_release_motor(void) {
 	get_motor_now()->m_control_mode = CONTROL_MODE_CURRENT;
 	get_motor_now()->m_iq_set = 0.0;
 	get_motor_now()->m_id_set = 0.0;
+	get_motor_now()->m_id_diss_set = 0.0;
 	get_motor_now()->m_motor_released = true;
 }
 
@@ -863,6 +864,67 @@ void mcpwm_foc_set_handbrake(float current) {
 		get_motor_now()->m_motor_released = false;
 		get_motor_now()->m_state = MC_STATE_RUNNING;
 	}
+}
+
+// Molten MOSFET: d-axis dissipation injection limits. Deliberately not part of
+// mc_configuration (fork rule: no mcconf layout changes) — the off-delay travels
+// in every command, so a dead host can never leave the injection latched on.
+#define ID_DISS_RAMP_A_PER_S		500.0	// slew of the injected |id|
+#define ID_DISS_OFF_DELAY_MIN		0.05	// s, floor so the watchdog is always armed
+#define ID_DISS_OFF_DELAY_MAX		5.0		// s, cap so a bad command can't disarm it
+
+/**
+ * Molten MOSFET: inject d-axis current to dissipate energy as winding heat
+ * (the dyno's brake-energy dump — see the fork README). The current is applied
+ * in the negative-id (field-weakening) direction, produces ~zero torque on a
+ * surface-PM motor, and rides along with whatever control mode is active.
+ * Torque keeps priority: the injection only ever takes the current budget the
+ * q axis leaves over, so it can never clip a braking setpoint.
+ *
+ * Refresh-or-decay: each command is valid for off_delay seconds and must be
+ * refreshed; on expiry (or fault / release / timeout) the injection ramps out.
+ *
+ * @param current
+ * Dissipation current magnitude in A (negative values are treated as 0).
+ *
+ * @param off_delay
+ * Command validity window in seconds, clamped to
+ * [ID_DISS_OFF_DELAY_MIN, ID_DISS_OFF_DELAY_MAX].
+ */
+void mcpwm_foc_set_id_dissipate(float current, float off_delay) {
+	volatile motor_all_state_t *motor = get_motor_now();
+
+	if (current < 0.0) {
+		current = 0.0;
+	}
+	utils_truncate_number(&current, 0.0,
+			motor->m_conf->l_current_max * motor->m_conf->l_current_max_scale);
+	utils_truncate_number(&off_delay, ID_DISS_OFF_DELAY_MIN, ID_DISS_OFF_DELAY_MAX);
+
+	motor->m_id_diss_set = current;
+	motor->m_id_diss_off_delay = off_delay;
+
+	if (current < motor->m_conf->cc_min_current) {
+		return;
+	}
+
+	// Standalone use (no torque command active): start current control with
+	// zero torque so the injection alone keeps the modulation running.
+	if (motor->m_state != MC_STATE_RUNNING) {
+		motor->m_iq_set = 0.0;
+		motor->m_id_set = 0.0;
+		motor->m_control_mode = CONTROL_MODE_CURRENT;
+		motor->m_motor_released = false;
+		motor->m_state = MC_STATE_RUNNING;
+	}
+}
+
+float mcpwm_foc_get_id_dissipate_set(void) {
+	return get_motor_now()->m_id_diss_set;
+}
+
+float mcpwm_foc_get_id_dissipate_now(void) {
+	return get_motor_now()->m_id_diss_now;
 }
 
 /**
@@ -3657,6 +3719,27 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 		}
 
 		float current_max_abs = fabsf(utils_max_abs(conf_now->lo_current_max, conf_now->lo_current_min));
+
+		// Molten MOSFET: d-axis dissipation injection. The commanded value has a
+		// validity window (refresh-or-decay watchdog) and is slew-limited both in
+		// and out. It only ever takes the current budget iq leaves over — torque
+		// keeps priority, opposite of the field-weakening truncation order — and
+		// combines with MTPA/FW id via max_abs so concurrent FW is subsumed, not
+		// stacked. lo_current_max is already temp-foldback-derated upstream, so
+		// the injection inherits the FET/motor thermal backstop.
+		utils_step_towards((float*)&motor_now->m_id_diss_off_delay, 0.0, dt);
+		if (motor_now->m_id_diss_off_delay < dt) {
+			motor_now->m_id_diss_set = 0.0; // expired command never revives
+		}
+		utils_step_towards((float*)&motor_now->m_id_diss_now,
+				motor_now->m_id_diss_set, dt * ID_DISS_RAMP_A_PER_S);
+		if (motor_now->m_id_diss_now > 0.001) {
+			float diss_budget_sq = SQ(current_max_abs) - SQ(iq_set_tmp);
+			float diss_max = diss_budget_sq > 0.0 ? sqrtf(diss_budget_sq) : 0.0;
+			float id_diss = -fminf(motor_now->m_id_diss_now, diss_max);
+			id_set_tmp = utils_max_abs(id_set_tmp, id_diss);
+		}
+
 		utils_truncate_number_abs(&id_set_tmp, current_max_abs);
 		utils_truncate_number_abs(&iq_set_tmp, sqrtf(SQ(current_max_abs) - SQ(id_set_tmp)));
 
@@ -3670,6 +3753,12 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 		FOC_PROFILE_LINE_FINE();
 	} else {
 		// Motor is not running
+
+		// Molten MOSFET: motor stopped (fault, off, full brake) — drop any
+		// dissipation injection immediately so it cannot revive on restart.
+		motor_now->m_id_diss_set = 0.0;
+		motor_now->m_id_diss_now = 0.0;
+		motor_now->m_id_diss_off_delay = 0.0;
 
 		// The current is 0 when the motor is undriven
 		state_now->i_alpha = 0.0;
@@ -3954,6 +4043,7 @@ static void timer_update(motor_all_state_t *motor, float dt) {
 		if (fabsf(motor->m_iq_set) < min_current &&
 				fabsf(motor->m_id_set) < min_current &&
 				motor->m_i_fw_set < min_current &&
+				motor->m_id_diss_now < min_current &&
 				motor->m_current_off_delay < dt) {
 			motor->m_control_mode = CONTROL_MODE_NONE;
 			motor->m_state = MC_STATE_OFF;

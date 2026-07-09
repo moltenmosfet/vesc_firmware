@@ -39,6 +39,7 @@
 #include "utils_sys.h"
 #include "mempools.h"
 #include "shutdown.h"
+#include "mcpwm_foc.h"
 #include "bms.h"
 #include "encoder_cfg.h"
 #include "servo_dec.h"
@@ -527,6 +528,17 @@ void comm_can_set_current_off_delay(uint8_t controller_id, float current, float 
 	buffer_append_float16(buffer, off_delay, 1e3, &send_index);
 	comm_can_transmit_eid_replace(controller_id |
 			((uint32_t)CAN_PACKET_SET_CURRENT << 8), buffer, send_index, true, 0);
+}
+
+// Molten MOSFET: command the d-axis dissipation injection on a CAN node.
+// Payload: [current i32 x1e3 (A)][off_delay f16 x1e3 (s)] — both mandatory.
+void comm_can_set_id_dissipate(uint8_t controller_id, float current, float off_delay) {
+	int32_t send_index = 0;
+	uint8_t buffer[6];
+	buffer_append_int32(buffer, (int32_t)(current * 1000.0), &send_index);
+	buffer_append_float16(buffer, off_delay, 1e3, &send_index);
+	comm_can_transmit_eid_replace(controller_id |
+			((uint32_t)CAN_PACKET_MM_SET_ID_DISSIPATE << 8), buffer, send_index, true, 0);
 }
 
 void comm_can_set_current_brake(uint8_t controller_id, float current) {
@@ -1273,6 +1285,33 @@ void comm_can_send_status6(uint8_t id, bool replace) {
 			buffer, send_index, replace, 0);
 }
 
+// Molten MOSFET: dissipation telemetry, broadcast alongside STATUS_1 but only
+// while the injection is armed (keeps the bus clean when the feature is idle).
+// Payload: [id_meas i16 x10 (A)][iq_meas i16 x10 (A)][id_diss_now i16 x10 (A)]
+//          [p_copper u16 (W)] — copper-loss estimate 1.5*Rs*(id²+iq²), the
+// quantity the host dissipation/thermal loop integrates.
+void comm_can_send_status_mm_dissipation(uint8_t id, bool replace) {
+	float diss_now = mcpwm_foc_get_id_dissipate_now();
+	if (diss_now < 0.001 && mcpwm_foc_get_id_dissipate_set() < 0.001) {
+		return;
+	}
+
+	float id_meas = mcpwm_foc_get_id_filter();
+	float iq_meas = mcpwm_foc_get_iq_filter();
+	float p_copper = 1.5 * mc_interface_get_configuration()->foc_motor_r *
+			(SQ(id_meas) + SQ(iq_meas));
+	utils_truncate_number(&p_copper, 0.0, 65535.0);
+
+	int32_t send_index = 0;
+	uint8_t buffer[8];
+	buffer_append_int16(buffer, (int16_t)(id_meas * 1e1), &send_index);
+	buffer_append_int16(buffer, (int16_t)(iq_meas * 1e1), &send_index);
+	buffer_append_int16(buffer, (int16_t)(diss_now * 1e1), &send_index);
+	buffer_append_uint16(buffer, (uint16_t)p_copper, &send_index);
+	comm_can_transmit_eid_replace(id | ((uint32_t)CAN_PACKET_MM_STATUS_DISSIPATION << 8),
+			buffer, send_index, replace, 0);
+}
+
 #if CAN_ENABLE
 static THD_FUNCTION(cancom_read_thread, arg) {
 	(void)arg;
@@ -1471,9 +1510,11 @@ static void send_can_status(uint8_t msgs, uint8_t id) {
 	if ((msgs >> 0) & 1) {
 		mc_interface_select_motor_thread(1);
 		comm_can_send_status1(id, false);
+		comm_can_send_status_mm_dissipation(id, false);
 #ifdef HW_HAS_DUAL_MOTORS
 		mc_interface_select_motor_thread(2);
 		comm_can_send_status1(utils_second_motor_id(), false);
+		comm_can_send_status_mm_dissipation(utils_second_motor_id(), false);
 #endif
 	}
 
@@ -1834,6 +1875,18 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 			ind = 0;
 			mc_interface_set_handbrake_rel(buffer_get_float32(data8, 1e5, &ind));
 			timeout_reset();
+			break;
+
+		// Molten MOSFET: d-axis dissipation injection. The off-delay is
+		// mandatory (it is the command's watchdog) — short frames are ignored.
+		case CAN_PACKET_MM_SET_ID_DISSIPATE:
+			if (len >= 6) {
+				ind = 0;
+				float diss_current = buffer_get_float32(data8, 1e3, &ind);
+				float diss_off_delay = buffer_get_float16(data8, 1e3, &ind);
+				mc_interface_set_id_dissipate(diss_current, diss_off_delay);
+				timeout_reset();
+			}
 			break;
 
 		case CAN_PACKET_PING: {

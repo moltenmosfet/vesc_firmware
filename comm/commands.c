@@ -500,6 +500,16 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		timeout_reset();
 	} break;
 
+	// Molten MOSFET: d-axis dissipation injection.
+	// Payload: [current i32 x1e3 (A)][off_delay f16 x1e3 (s)]
+	case COMM_MM_SET_ID_DISSIPATE: {
+		int32_t ind = 0;
+		float diss_current = buffer_get_float32(data, 1e3, &ind);
+		float diss_off_delay = buffer_get_float16(data, 1e3, &ind);
+		mc_interface_set_id_dissipate(diss_current, diss_off_delay);
+		timeout_reset();
+	} break;
+
 	case COMM_SET_RPM: {
 		int32_t ind = 0;
 		mc_interface_set_pid_speed((float)buffer_get_int32(data, &ind));

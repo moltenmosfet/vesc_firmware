@@ -727,6 +727,39 @@ __attribute__((section(".text2"))) void terminal_process_string(char *str) {
 		} else {
 			commands_printf("This command requires two arguments. [duty erpm]\n");
 		}
+	} else if (strcmp(argv[0], "mm_diss") == 0) {
+		// Molten MOSFET: one-shot d-axis dissipation for bench work. The
+		// off-delay watchdog (capped at 5 s) ramps it out on its own, so a
+		// single terminal command can never leave the injection latched.
+		if (argc == 3) {
+			float current = -1.0;
+			float off_delay = -1.0;
+			sscanf(argv[1], "%f", &current);
+			sscanf(argv[2], "%f", &off_delay);
+			if (current >= 0.0 && current <= mc_interface_get_configuration()->l_current_max && off_delay > 0.0) {
+				timeout_reset();
+				mc_interface_set_id_dissipate(current, off_delay);
+				commands_printf("Dissipating %.1f A on the d axis for up to %.2f s (5 s cap)",
+						(double)current, (double)off_delay);
+				int fault = mc_interface_get_fault();
+				if (fault != FAULT_CODE_NONE) {
+					commands_printf("Fault occured: %s", mc_interface_fault_to_string(fault));
+				}
+			} else {
+				commands_printf("Invalid argument(s). Current 0.0..%.2f, off_delay > 0.",
+						(double)mc_interface_get_configuration()->l_current_max);
+			}
+		} else if (argc == 1) {
+			commands_printf("diss_now : %.2f A", (double)mcpwm_foc_get_id_dissipate_now());
+			commands_printf("diss_set : %.2f A", (double)mcpwm_foc_get_id_dissipate_set());
+			commands_printf("id       : %.2f A", (double)mcpwm_foc_get_id_filter());
+			commands_printf("iq       : %.2f A", (double)mcpwm_foc_get_iq_filter());
+			commands_printf("p_copper : %.1f W\n", (double)(1.5 *
+					mc_interface_get_configuration()->foc_motor_r *
+					(SQ(mcpwm_foc_get_id_filter()) + SQ(mcpwm_foc_get_iq_filter()))));
+		} else {
+			commands_printf("Usage: mm_diss [current] [off_delay], or mm_diss to print state\n");
+		}
 	} else if (strcmp(argv[0], "nrf_ext_set_enabled") == 0) {
 		if (argc == 2) {
 			int enabled = -1;
@@ -1243,6 +1276,9 @@ __attribute__((section(".text2"))) void terminal_process_string(char *str) {
 
 		commands_printf("foc_openloop_duty [duty] [erpm]");
 		commands_printf("  Create an open loop rotating voltage vector.");
+
+		commands_printf("mm_diss [current] [off_delay]");
+		commands_printf("  Molten MOSFET: inject d-axis dissipation current; no args prints state.");
 
 		commands_printf("nrf_ext_set_enabled [enabled]");
 		commands_printf("  Enable or disable external NRF51822.");

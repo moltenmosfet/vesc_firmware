@@ -1140,6 +1140,10 @@ typedef enum {
 	COMM_CAN_UPDATE_BAUD_ALL				= 158,
 
 	COMM_MOTOR_ESTOP						= 159,
+
+	// Molten MOSFET private block (240+). Kept far above upstream's
+	// allocation frontier so merges from vedderb/bldc can never collide.
+	COMM_MM_SET_ID_DISSIPATE				= 240,
 } COMM_PACKET_ID;
 
 // CAN commands
@@ -1213,6 +1217,13 @@ typedef enum {
 	CAN_PACKET_BMS_STATUS_3					= 66,
 	CAN_PACKET_BMS_STATUS_4					= 67,
 	CAN_PACKET_BMS_STATUS_5					= 68,
+
+	// Molten MOSFET private block (200–209). The EID packet field is much
+	// wider than 8 bits, and upstream allocates sequentially from the bottom,
+	// so this range is collision-proof against merges from vedderb/bldc.
+	CAN_PACKET_MM_SET_ID_DISSIPATE			= 200,
+	CAN_PACKET_MM_STATUS_DISSIPATION		= 201,
+
 	CAN_PACKET_MAKE_ENUM_32_BITS = 0xFFFFFFFF,
 } CAN_PACKET_ID;
 

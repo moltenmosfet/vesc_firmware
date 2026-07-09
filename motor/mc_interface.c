@@ -725,6 +725,39 @@ void mc_interface_set_brake_current(float current) {
 }
 
 /**
+ * Molten MOSFET: command the d-axis dissipation injection (FOC only, no-op for
+ * other motor types). Magnitude + validity window; see mcpwm_foc_set_id_dissipate.
+ */
+void mc_interface_set_id_dissipate(float current, float off_delay) {
+	if (fabsf(current) > 0.001) {
+		SHUTDOWN_RESET();
+	}
+
+	if (mc_interface_try_input()) {
+		return;
+	}
+
+	// No DIR_MULT: the injection is a signless magnitude on the d axis.
+	switch (motor_now()->m_conf.motor_type) {
+	case MOTOR_TYPE_FOC:
+		mcpwm_foc_set_id_dissipate(current, off_delay);
+		break;
+
+	default:
+		break;
+	}
+
+	events_add("set_id_dissipate", current);
+}
+
+float mc_interface_get_id_dissipate_now(void) {
+	if (motor_now()->m_conf.motor_type == MOTOR_TYPE_FOC) {
+		return mcpwm_foc_get_id_dissipate_now();
+	}
+	return 0.0;
+}
+
+/**
  * Set current relative to the minimum and maximum current limits.
  *
  * @param current

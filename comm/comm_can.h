@@ -40,6 +40,7 @@ void comm_can_send_buffer(uint8_t controller_id, uint8_t *data, unsigned int len
 void comm_can_set_duty(uint8_t controller_id, float duty);
 void comm_can_set_current(uint8_t controller_id, float current);
 void comm_can_set_current_off_delay(uint8_t controller_id, float current, float off_delay);
+void comm_can_set_id_dissipate(uint8_t controller_id, float current, float off_delay);
 void comm_can_set_current_brake(uint8_t controller_id, float current);
 void comm_can_set_rpm(uint8_t controller_id, float rpm);
 void comm_can_set_pos(uint8_t controller_id, float pos);
@@ -96,5 +97,6 @@ void comm_can_send_status3(uint8_t id, bool replace);
 void comm_can_send_status4(uint8_t id, bool replace);
 void comm_can_send_status5(uint8_t id, bool replace);
 void comm_can_send_status6(uint8_t id, bool replace);
+void comm_can_send_status_mm_dissipation(uint8_t id, bool replace);
 
 #endif /* COMM_CAN_H_ */
