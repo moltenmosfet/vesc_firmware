@@ -9,7 +9,7 @@ and driven as a four-quadrant load by a VESC-derivative SiC inverter.
 
 ## Why a fork
 
-The dyno needs one capability stock VESC firmware doesn't have:
+The dyno needs capabilities stock VESC firmware doesn't have:
 
 **d-axis dissipation braking.** During absorption tests the rig recovers up to tens of
 kW from the device under test. Instead of dumping that energy into a resistor bank
@@ -19,6 +19,17 @@ which the motor's water jacket carries away. The firmware side of this is a
 dissipation mode — a commanded d-axis current wrapped in ramping, a refresh-or-decay
 watchdog, and current/thermal clamps. Torque (q-axis) control keeps priority at all
 times; dissipation only ever takes the leftover current budget.
+
+**The d-axis bus clamp — braking without a battery.** When the DC bus has no sink
+(a bench PSU that can't sink current; a full pack that must not be overcharged),
+regen would run the bus into the overvoltage fault. A firmware-local fast-loop
+controller burns regen in the windings as it is produced: a bus-current floor
+(input current never goes below a setpoint — zero means never backfeed) plus a
+voltage clamp as reactive backstop. Armed-only, RAM-only, deliberately not
+watchdogged. Design, wire protocol, margins and the bench ladder:
+[documentation/mm_d_axis_dissipation.md](documentation/mm_d_axis_dissipation.md).
+
+Dyno build (drops unused LispBM for flash headroom): `make 60 USE_LISPBM=0`.
 
 ## Fork design rules
 

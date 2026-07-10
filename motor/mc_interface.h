@@ -49,6 +49,7 @@ void mc_interface_set_current(float current);
 void mc_interface_set_brake_current(float current);
 void mc_interface_set_id_dissipate(float current, float off_delay);
 float mc_interface_get_id_dissipate_now(void);
+bool mc_interface_conf_bus_clamp(float v_clamp, float i_floor, float i_max, uint8_t flags);
 void mc_interface_set_current_rel(float val);
 void mc_interface_set_brake_current_rel(float val);
 void mc_interface_set_handbrake(float current);

@@ -541,6 +541,21 @@ void comm_can_set_id_dissipate(uint8_t controller_id, float current, float off_d
 			((uint32_t)CAN_PACKET_MM_SET_ID_DISSIPATE << 8), buffer, send_index, true, 0);
 }
 
+// Molten MOSFET: arm/disarm the d-axis bus clamp on a CAN node.
+// Payload: [v_clamp f16 x1e1 (V)][i_floor f16 x1e2 (A)][i_max f16 x1e1 (A)]
+//          [flags u8: bit0 clamp_en, bit1 floor_en, bit2 allow_start]. flags 0 = disarm.
+void comm_can_conf_bus_clamp(uint8_t controller_id, float v_clamp,
+		float i_floor, float i_max, uint8_t flags) {
+	int32_t send_index = 0;
+	uint8_t buffer[7];
+	buffer_append_float16(buffer, v_clamp, 1e1, &send_index);
+	buffer_append_float16(buffer, i_floor, 1e2, &send_index);
+	buffer_append_float16(buffer, i_max, 1e1, &send_index);
+	buffer[send_index++] = flags;
+	comm_can_transmit_eid_replace(controller_id |
+			((uint32_t)CAN_PACKET_MM_CONF_BUS_CLAMP << 8), buffer, send_index, true, 0);
+}
+
 void comm_can_set_current_brake(uint8_t controller_id, float current) {
 	int32_t send_index = 0;
 	uint8_t buffer[4];
@@ -1312,6 +1327,35 @@ void comm_can_send_status_mm_dissipation(uint8_t id, bool replace) {
 			buffer, send_index, replace, 0);
 }
 
+// Molten MOSFET: bus-clamp telemetry, broadcast alongside STATUS_1 while
+// ARMED (not merely while active — an armed-but-idle clamp being visible on
+// the bus is the point). Payload: [v_bus f16 x1e1][i_bus_filtered f16 x1e2]
+// [id_clamp_now f16 x1e1][flags u8: armed|clamp_active|floor_active|
+// saturated|started_modulation]. i_bus is the filtered value the floor loop
+// actually regulates on.
+void comm_can_send_status_mm_bus_clamp(uint8_t id, bool replace) {
+	mm_bus_clamp_state bc;
+	mcpwm_foc_get_bus_clamp(&bc);
+	if (!bc.armed) {
+		return;
+	}
+
+	uint8_t flags = 0x01;
+	if (bc.clamp_active) flags |= 0x02;
+	if (bc.floor_active) flags |= 0x04;
+	if (bc.saturated) flags |= 0x08;
+	if (bc.started_modulation) flags |= 0x10;
+
+	int32_t send_index = 0;
+	uint8_t buffer[8];
+	buffer_append_float16(buffer, mc_interface_get_input_voltage_filtered(), 1e1, &send_index);
+	buffer_append_float16(buffer, bc.ibus_filter, 1e2, &send_index);
+	buffer_append_float16(buffer, bc.id_now, 1e1, &send_index);
+	buffer[send_index++] = flags;
+	comm_can_transmit_eid_replace(id | ((uint32_t)CAN_PACKET_MM_STATUS_BUS_CLAMP << 8),
+			buffer, send_index, replace, 0);
+}
+
 #if CAN_ENABLE
 static THD_FUNCTION(cancom_read_thread, arg) {
 	(void)arg;
@@ -1511,10 +1555,12 @@ static void send_can_status(uint8_t msgs, uint8_t id) {
 		mc_interface_select_motor_thread(1);
 		comm_can_send_status1(id, false);
 		comm_can_send_status_mm_dissipation(id, false);
+		comm_can_send_status_mm_bus_clamp(id, false);
 #ifdef HW_HAS_DUAL_MOTORS
 		mc_interface_select_motor_thread(2);
 		comm_can_send_status1(utils_second_motor_id(), false);
 		comm_can_send_status_mm_dissipation(utils_second_motor_id(), false);
+		comm_can_send_status_mm_bus_clamp(utils_second_motor_id(), false);
 #endif
 	}
 
@@ -1886,6 +1932,19 @@ static void decode_msg(uint32_t eid, uint8_t *data8, int len, bool is_replaced) 
 				float diss_off_delay = buffer_get_float16(data8, 1e3, &ind);
 				mc_interface_set_id_dissipate(diss_current, diss_off_delay);
 				timeout_reset();
+			}
+			break;
+
+		// Molten MOSFET: bus-clamp configuration. No timeout_reset — this is
+		// configuration, and the armed protection is deliberately not
+		// watchdogged (a dead host must not disarm the clamp).
+		case CAN_PACKET_MM_CONF_BUS_CLAMP:
+			if (len >= 7) {
+				ind = 0;
+				float bc_v_clamp = buffer_get_float16(data8, 1e1, &ind);
+				float bc_i_floor = buffer_get_float16(data8, 1e2, &ind);
+				float bc_i_max = buffer_get_float16(data8, 1e1, &ind);
+				mc_interface_conf_bus_clamp(bc_v_clamp, bc_i_floor, bc_i_max, data8[ind]);
 			}
 			break;
 

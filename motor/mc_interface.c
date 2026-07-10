@@ -758,6 +758,28 @@ float mc_interface_get_id_dissipate_now(void) {
 }
 
 /**
+ * Molten MOSFET: arm/disarm the d-axis bus clamp (FOC only). This is
+ * CONFIGURATION, not an actuator command: no mc_interface_try_input() gate
+ * (disarm must always work) and no timeout_reset() at the callers
+ * (protection is deliberately not watchdogged).
+ */
+bool mc_interface_conf_bus_clamp(float v_clamp, float i_floor, float i_max, uint8_t flags) {
+	bool res = false;
+
+	switch (motor_now()->m_conf.motor_type) {
+	case MOTOR_TYPE_FOC:
+		res = mcpwm_foc_conf_bus_clamp(v_clamp, i_floor, i_max, flags);
+		break;
+
+	default:
+		break;
+	}
+
+	events_add("conf_bus_clamp", v_clamp);
+	return res;
+}
+
+/**
  * Set current relative to the minimum and maximum current limits.
  *
  * @param current
@@ -1951,6 +1973,17 @@ void mc_interface_mc_timer_isr(bool is_second_motor, float dt) {
 		} else {
 			wrong_voltage_integrator = 0.0;
 		}
+	}
+
+	// Molten MOSFET: bus-clamp auto-restart for the coast case (armed clamp,
+	// motor released, bus pumped through the body diodes by an external
+	// spin). Lives HERE, not in mcpwm_foc, so it can never fight the
+	// post-fault lockout: it only fires with no active fault and the
+	// ignore-window expired.
+	if (motor->m_conf.motor_type == MOTOR_TYPE_FOC &&
+			motor->m_fault_now == FAULT_CODE_NONE &&
+			motor->m_ignore_iterations == 0) {
+		mcpwm_foc_bus_clamp_try_start(is_second_motor);
 	}
 
 	FOC_PROFILE_LINE_FINE()

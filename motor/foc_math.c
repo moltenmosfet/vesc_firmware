@@ -758,6 +758,101 @@ void foc_run_fw(motor_all_state_t *motor, float dt) {
 	}
 }
 
+// Molten MOSFET: d-axis bus clamp gains. The clamp plant is the DC-link
+// capacitance (C·dv/dt = I_excess − u), so with PI in bus-amps:
+// wn = sqrt(Ki/C), zeta = Kp/(2·sqrt(Ki·C)). The values below assume the
+// ~2 mF bench DC link: wn ≈ 71 Hz, zeta ≈ 1.1 (overdamped), safely under
+// the ~240 Hz v_bus filter pole. THEY SCALE WITH C — re-derive before a
+// larger DC link (planned: a conf frame carrying C_dc, firmware derives
+// gains). The floor plant is ~unity static (burning u bus-amps raises
+// i_bus by u within a current-loop time constant).
+#define BC_CLAMP_KP		2.0		// bus-A per V
+#define BC_CLAMP_KI		400.0	// bus-A per V·s
+#define BC_FLOOR_KP		0.5		// bus-A per bus-A
+#define BC_FLOOR_KI		500.0	// 1/s
+#define BC_IBUS_ALPHA	0.1		// ~240 Hz pole at 15 kHz control rate
+#define BC_SLEW_A_S		20000.0	// sanity bound on id_now only — NOT loop shaping
+
+/**
+ * Molten MOSFET: run the d-axis bus clamp — dissipative braking without a
+ * battery. Two positive-part PIs in the bus-current domain demand winding
+ * burn: the FLOOR keeps the (filtered) DC input current at or above
+ * i_floor (0 = regen is burned as it is produced, never backfed), the
+ * CLAMP holds v_bus at or below v_clamp (reactive backstop). The larger
+ * demand is linearized through the square-law copper plant
+ * P = 1.5·Rs·id² (so loop gain is independent of operating point) and
+ * drives id_now, merged with the host dissipation command in the fast
+ * loop with iq keeping priority.
+ *
+ * Anti-windup: conditional integration (positive error and not
+ * budget-saturated, or integrator draining), integrator and total demand
+ * clamped to the physically burnable u_max = 1.5·Rs·i_cap²/v.
+ */
+void foc_run_bus_clamp(motor_all_state_t *motor, float dt) {
+	mm_bus_clamp_state *bc = (mm_bus_clamp_state*)&motor->m_bus_clamp;
+
+	if (!bc->armed || motor->m_state != MC_STATE_RUNNING) {
+		bc->floor_int = 0.0;
+		bc->clamp_int = 0.0;
+		bc->clamp_active = false;
+		bc->floor_active = false;
+		utils_step_towards(&bc->id_now, 0.0, dt * BC_SLEW_A_S);
+		return;
+	}
+
+	const float v = motor->m_motor_state.v_bus;
+	const float rs = motor->m_res_temp_comp;
+	if (v < 1.0 || rs < 1e-4) {
+		// No trustworthy linearization (undetected motor / dead bus reading).
+		utils_step_towards(&bc->id_now, 0.0, dt * BC_SLEW_A_S);
+		return;
+	}
+
+	UTILS_LP_FAST(bc->ibus_filter, motor->m_motor_state.i_bus, BC_IBUS_ALPHA);
+
+	// lo_current_max is already temp-foldback-derated upstream, so the clamp
+	// inherits the FET/winding thermal backstop; i_max is the per-feature
+	// ceiling from the arm command.
+	float i_cap = motor->m_conf->lo_current_max;
+	if (bc->i_max > 0.01) {
+		i_cap = fminf(i_cap, bc->i_max);
+	}
+	if (i_cap < 0.0) {
+		i_cap = 0.0;
+	}
+	const float u_max = 1.5 * rs * SQ(i_cap) / v; // max burnable, bus-A
+
+	float u_floor = 0.0;
+	if (bc->floor_en) {
+		float e = bc->i_floor - bc->ibus_filter;
+		if ((e > 0.0 && !bc->saturated) || bc->floor_int > 0.0) {
+			bc->floor_int += e * BC_FLOOR_KI * dt;
+		}
+		utils_truncate_number(&bc->floor_int, 0.0, u_max);
+		u_floor = BC_FLOOR_KP * e + bc->floor_int;
+	}
+
+	float u_clamp = 0.0;
+	if (bc->clamp_en) {
+		float e = v - bc->v_clamp;
+		if ((e > 0.0 && !bc->saturated) || bc->clamp_int > 0.0) {
+			bc->clamp_int += e * BC_CLAMP_KI * dt;
+		}
+		utils_truncate_number(&bc->clamp_int, 0.0, u_max);
+		u_clamp = BC_CLAMP_KP * e + bc->clamp_int;
+	}
+
+	float u = fmaxf(fmaxf(u_floor, u_clamp), 0.0);
+	utils_truncate_number(&u, 0.0, u_max);
+
+	float id_target = sqrtf(u * v / (1.5 * rs));
+	utils_truncate_number(&id_target, 0.0, i_cap);
+	utils_step_towards(&bc->id_now, id_target, dt * BC_SLEW_A_S);
+
+	bc->clamp_active = (u > 0.01) && (u_clamp >= u_floor);
+	bc->floor_active = (u > 0.01) && (u_floor > u_clamp);
+}
+
 void foc_hfi_adjust_angle(float ang_err, motor_all_state_t *motor, float dt) {
 	mc_configuration *conf = motor->m_conf;
 	utils_truncate_number_abs(&ang_err, conf->foc_hfi_max_err);

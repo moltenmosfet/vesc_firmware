@@ -135,6 +135,33 @@ typedef enum {
 	FOC_PWM_FULL_BRAKE
 } foc_pwm_mode;
 
+// Molten MOSFET: d-axis bus clamp — dissipative braking without a battery.
+// Two positive-part PIs (bus-current floor + voltage clamp) demand winding
+// burn in bus-amps; foc_run_bus_clamp() linearizes through the square-law
+// copper plant and drives id_now, which merges with the host dissipation
+// command in the fast loop. Armed configuration survives faults and releases
+// (protection is not watchdogged); controller state does not.
+typedef struct {
+	// Armed configuration (RAM only; cleared only by explicit disarm)
+	bool armed;
+	bool clamp_en;
+	bool floor_en;
+	bool allow_start;   // may (re)start modulation when the bus is pumped at speed
+	float v_clamp;      // V, clamp setpoint
+	float i_floor;      // bus A, floor setpoint (0 = never backfeed the supply)
+	float i_max;        // injected |id| ceiling, A (0 = motor limit)
+	// Controller state (reset on fault/stop/disarm)
+	float ibus_filter;  // dedicated LP of the i_bus estimate
+	float floor_int;    // floor integrator, bus A
+	float clamp_int;    // clamp integrator, bus A
+	float id_now;       // applied injection magnitude, A (>= 0)
+	// Status latches
+	bool saturated;     // iq-priority budget clipped the demand last cycle
+	bool clamp_active;
+	bool floor_active;
+	bool started_modulation;
+} mm_bus_clamp_state;
+
 typedef struct {
 	mc_configuration *m_conf;
 	mc_state m_state;
@@ -155,6 +182,7 @@ typedef struct {
 	float m_id_diss_set;       // commanded dissipation current
 	float m_id_diss_now;       // ramped current actually injected
 	float m_id_diss_off_delay; // command validity countdown (s); 0 -> decay
+	mm_bus_clamp_state m_bus_clamp; // Molten MOSFET: d-axis bus clamp
 	float m_openloop_speed;
 	float m_openloop_phase;
 	foc_pwm_mode m_pwm_mode;
@@ -264,6 +292,7 @@ void foc_run_pid_control_speed(bool index_found, float dt, motor_all_state_t *mo
 float foc_correct_encoder(float obs_angle, float enc_angle, float speed, float sl_erpm, motor_all_state_t *motor);
 float foc_correct_hall(float angle, float dt, motor_all_state_t *motor, int hall_val);
 void foc_run_fw(motor_all_state_t *motor, float dt);
+void foc_run_bus_clamp(motor_all_state_t *motor, float dt);
 void foc_hfi_adjust_angle(float ang_err, motor_all_state_t *motor, float dt);
 void foc_precalc_values(motor_all_state_t *motor);
 

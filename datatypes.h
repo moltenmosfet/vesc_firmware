@@ -1144,6 +1144,7 @@ typedef enum {
 	// Molten MOSFET private block (240+). Kept far above upstream's
 	// allocation frontier so merges from vedderb/bldc can never collide.
 	COMM_MM_SET_ID_DISSIPATE				= 240,
+	COMM_MM_CONF_BUS_CLAMP					= 241,
 } COMM_PACKET_ID;
 
 // CAN commands
@@ -1223,6 +1224,8 @@ typedef enum {
 	// so this range is collision-proof against merges from vedderb/bldc.
 	CAN_PACKET_MM_SET_ID_DISSIPATE			= 200,
 	CAN_PACKET_MM_STATUS_DISSIPATION		= 201,
+	CAN_PACKET_MM_CONF_BUS_CLAMP			= 202,
+	CAN_PACKET_MM_STATUS_BUS_CLAMP			= 203,
 
 	CAN_PACKET_MAKE_ENUM_32_BITS = 0xFFFFFFFF,
 } CAN_PACKET_ID;

@@ -40,6 +40,7 @@
 #include "packet.h"
 #include "commands.h"
 #include "timeout.h"
+#include "mm_commands.h"
 #include "encoder/encoder.h"
 #include "pwm_servo.h"
 #include "utils_math.h"
@@ -392,6 +393,9 @@ int main(void) {
 
 	timeout_init();
 	timeout_configure(appconf->timeout_msec, appconf->timeout_brake_current, appconf->kill_sw_mode);
+
+	// Molten MOSFET: bench terminal commands (mm_diss, mm_clamp).
+	mm_commands_init();
 
 #if HAS_BLACKMAGIC
 	bm_init();

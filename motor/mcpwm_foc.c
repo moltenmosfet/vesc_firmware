@@ -928,6 +928,125 @@ float mcpwm_foc_get_id_dissipate_now(void) {
 }
 
 /**
+ * Molten MOSFET: arm/disarm the d-axis bus clamp (dissipative braking
+ * without a battery — see foc_run_bus_clamp). RAM-only configuration:
+ * survives faults, releases and comms timeouts (protection is deliberately
+ * not watchdogged), cleared only by an explicit disarm (flags == 0) or a
+ * reboot, so it must be re-armed each power-up.
+ *
+ * @param v_clamp
+ * Bus voltage ceiling in V (truncated into [l_min_vin + 2, l_max_vin - 1]).
+ *
+ * @param i_floor
+ * DC input current floor in A; 0 = never backfeed the supply.
+ *
+ * @param i_max
+ * Ceiling on the injected |id| in A; 0 = motor current limit.
+ *
+ * @param flags
+ * bit0 clamp_en, bit1 floor_en, bit2 allow_start_modulation. 0 = disarm.
+ *
+ * @return
+ * false if arming was rejected: HFI sensor mode owns the d axis (the clamp
+ * would be silently inert), or the other motor instance already owns the
+ * bus (one clamp per bus — a second PI would fight the first).
+ */
+bool mcpwm_foc_conf_bus_clamp(float v_clamp, float i_floor, float i_max, uint8_t flags) {
+	volatile motor_all_state_t *motor = get_motor_now();
+	mm_bus_clamp_state *bc = (mm_bus_clamp_state*)&motor->m_bus_clamp;
+
+	if (flags == 0) {
+		bc->armed = false;
+		bc->clamp_en = false;
+		bc->floor_en = false;
+		bc->allow_start = false;
+		bc->floor_int = 0.0;
+		bc->clamp_int = 0.0;
+		// id_now ramps out in foc_run_bus_clamp.
+		return true;
+	}
+
+	switch (motor->m_conf->foc_sensor_mode) {
+	case FOC_SENSOR_MODE_HFI:
+	case FOC_SENSOR_MODE_HFI_START:
+	case FOC_SENSOR_MODE_HFI_V2:
+	case FOC_SENSOR_MODE_HFI_V3:
+	case FOC_SENSOR_MODE_HFI_V4:
+	case FOC_SENSOR_MODE_HFI_V5:
+		return false;
+	default:
+		break;
+	}
+
+#ifdef HW_HAS_DUAL_MOTORS
+	{
+		volatile motor_all_state_t *other =
+				(motor == &m_motor_1) ? &m_motor_2 : &m_motor_1;
+		if (other->m_bus_clamp.armed) {
+			return false;
+		}
+	}
+#endif
+
+	utils_truncate_number(&v_clamp,
+			motor->m_conf->l_min_vin + 2.0, motor->m_conf->l_max_vin - 1.0);
+	utils_truncate_number(&i_floor,
+			-motor->m_conf->l_in_current_max, motor->m_conf->l_in_current_max);
+	utils_truncate_number(&i_max, 0.0,
+			motor->m_conf->l_current_max * motor->m_conf->l_current_max_scale);
+
+	bc->v_clamp = v_clamp;
+	bc->i_floor = i_floor;
+	bc->i_max = i_max;
+	bc->clamp_en = (flags & 0x01) != 0;
+	bc->floor_en = (flags & 0x02) != 0;
+	bc->allow_start = (flags & 0x04) != 0;
+	bc->armed = true;
+	return true;
+}
+
+void mcpwm_foc_get_bus_clamp(mm_bus_clamp_state *out) {
+	*out = *(mm_bus_clamp_state*)&get_motor_now()->m_bus_clamp;
+}
+
+/**
+ * Molten MOSFET: called from mc_interface_mc_timer_isr (fault-lockout aware)
+ * to (re)start modulation when an armed clamp sees the bus pumped above its
+ * setpoint by an externally-spun motor (body-diode rectification). Gated on
+ * enough speed for the observer phase to be trustworthy — at a garbage angle
+ * "id" leaks into the real q axis as torque, and a standstill motor cannot
+ * pump the bus anyway.
+ */
+void mcpwm_foc_bus_clamp_try_start(bool is_second_motor) {
+	volatile motor_all_state_t *motor = M_MOTOR(is_second_motor);
+	mm_bus_clamp_state *bc = (mm_bus_clamp_state*)&motor->m_bus_clamp;
+
+	if (!bc->armed || !bc->clamp_en || !bc->allow_start) {
+		return;
+	}
+	if (motor->m_state == MC_STATE_RUNNING) {
+		return;
+	}
+	if (motor->m_motor_state.v_bus < bc->v_clamp + 1.0) {
+		return;
+	}
+	if (fabsf(RADPS2RPM_f(motor->m_pll_speed)) <
+			fmaxf(motor->m_conf->foc_sl_erpm, 300.0)) {
+		return;
+	}
+
+	motor->m_iq_set = 0.0;
+	motor->m_id_set = 0.0;
+	motor->m_control_mode = CONTROL_MODE_CURRENT;
+	// Same trick as foc_run_fw: hold modulation on through the engage
+	// transient so the keep-alive check cannot race the ramping demand.
+	motor->m_current_off_delay = 0.5;
+	motor->m_motor_released = false;
+	motor->m_state = MC_STATE_RUNNING;
+	bc->started_modulation = true;
+}
+
+/**
  * Produce an openloop rotating current.
  *
  * @param current
@@ -3733,11 +3852,23 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 		}
 		utils_step_towards((float*)&motor_now->m_id_diss_now,
 				motor_now->m_id_diss_set, dt * ID_DISS_RAMP_A_PER_S);
-		if (motor_now->m_id_diss_now > 0.001) {
+
+		// Molten MOSFET: bus clamp — dissipative braking without a battery.
+		// Adds its own id demand (floor/clamp PIs, see foc_run_bus_clamp);
+		// merged with the host command via max, one injector.
+		foc_run_bus_clamp(motor_now, dt);
+
+		float inj_mag = fmaxf(motor_now->m_id_diss_now, motor_now->m_bus_clamp.id_now);
+		if (inj_mag > 0.001) {
 			float diss_budget_sq = SQ(current_max_abs) - SQ(iq_set_tmp);
 			float diss_max = diss_budget_sq > 0.0 ? sqrtf(diss_budget_sq) : 0.0;
-			float id_diss = -fminf(motor_now->m_id_diss_now, diss_max);
-			id_set_tmp = utils_max_abs(id_set_tmp, id_diss);
+			// Torque owns the budget: freeze the clamp integrators while
+			// clipped (anti-windup), and tell the host via the status flag.
+			motor_now->m_bus_clamp.saturated =
+					(motor_now->m_bus_clamp.id_now > diss_max + 0.5);
+			id_set_tmp = utils_max_abs(id_set_tmp, -fminf(inj_mag, diss_max));
+		} else {
+			motor_now->m_bus_clamp.saturated = false;
 		}
 
 		utils_truncate_number_abs(&id_set_tmp, current_max_abs);
@@ -3759,6 +3890,17 @@ void mcpwm_foc_adc_int_handler(void *p, uint32_t flags) {
 		motor_now->m_id_diss_set = 0.0;
 		motor_now->m_id_diss_now = 0.0;
 		motor_now->m_id_diss_off_delay = 0.0;
+
+		// Bus clamp: controller state resets; the ARMED CONFIG survives the
+		// fault/stop on purpose — protection re-engages when modulation does.
+		motor_now->m_bus_clamp.ibus_filter = 0.0;
+		motor_now->m_bus_clamp.floor_int = 0.0;
+		motor_now->m_bus_clamp.clamp_int = 0.0;
+		motor_now->m_bus_clamp.id_now = 0.0;
+		motor_now->m_bus_clamp.saturated = false;
+		motor_now->m_bus_clamp.clamp_active = false;
+		motor_now->m_bus_clamp.floor_active = false;
+		motor_now->m_bus_clamp.started_modulation = false;
 
 		// The current is 0 when the motor is undriven
 		state_now->i_alpha = 0.0;
@@ -4044,6 +4186,7 @@ static void timer_update(motor_all_state_t *motor, float dt) {
 				fabsf(motor->m_id_set) < min_current &&
 				motor->m_i_fw_set < min_current &&
 				motor->m_id_diss_now < min_current &&
+				motor->m_bus_clamp.id_now < min_current &&
 				motor->m_current_off_delay < dt) {
 			motor->m_control_mode = CONTROL_MODE_NONE;
 			motor->m_state = MC_STATE_OFF;

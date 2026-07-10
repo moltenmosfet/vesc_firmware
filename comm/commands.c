@@ -510,6 +510,16 @@ void commands_process_packet(unsigned char *data, unsigned int len,
 		timeout_reset();
 	} break;
 
+	// Molten MOSFET: bus-clamp configuration (same payload as the CAN frame).
+	// No timeout_reset — configuration, and the protection is not watchdogged.
+	case COMM_MM_CONF_BUS_CLAMP: {
+		int32_t ind = 0;
+		float bc_v_clamp = buffer_get_float16(data, 1e1, &ind);
+		float bc_i_floor = buffer_get_float16(data, 1e2, &ind);
+		float bc_i_max = buffer_get_float16(data, 1e1, &ind);
+		mc_interface_conf_bus_clamp(bc_v_clamp, bc_i_floor, bc_i_max, data[ind]);
+	} break;
+
 	case COMM_SET_RPM: {
 		int32_t ind = 0;
 		mc_interface_set_pid_speed((float)buffer_get_int32(data, &ind));
