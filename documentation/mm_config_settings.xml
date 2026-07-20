@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ConfigParams>
+    <Params>
+        <config_name>
+            <longName>none</longName>
+            <type>3</type>
+            <transmittable>0</transmittable>
+            <description></description>
+            <cDefine></cDefine>
+            <valString>mm_config</valString>
+            <maxLen>0</maxLen>
+        </config_name>
+        <hw_name>
+            <longName>Molten MOSFET Dyno</longName>
+            <type>0</type>
+            <transmittable>0</transmittable>
+            <description>Molten MOSFET dyno fork configuration: the DC-link capacitance (which sets the bus-clamp gains) and the optional boot auto-arm for the d-axis bus clamp. See documentation/mm_d_axis_dissipation.md.</description>
+            <cDefine></cDefine>
+        </hw_name>
+        <c_dc_uf>
+            <longName>DC-link capacitance</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Total DC-link bus capacitance in microfarads. The firmware derives the voltage-clamp PI gains from this (target damping 1.1, natural frequency 71 Hz) so the clamp response stays invariant as the bus bank changes. 0 keeps the compiled 2 mF bench defaults. Measure the real bank (sum the bus cans) before the high-voltage rig: larger C with unscaled gains is the slow, underdamped, dangerous direction.</description>
+            <cDefine></cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>200000</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>10</stepDouble>
+            <valDouble>0</valDouble>
+            <vTxDoubleScale>1000</vTxDoubleScale>
+            <suffix> uF</suffix>
+            <vTx>9</vTx>
+        </c_dc_uf>
+        <autoarm_en>
+            <longName>Arm the bus clamp at boot</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>When on, the stored clamp configuration below is applied at every boot (equivalent to the arm command). Default off keeps the armed-only posture — nothing burns unless commanded. Boot arming is skipped if the sensor mode is HFI or the other motor already owns the bus.</description>
+            <cDefine></cDefine>
+            <valInt>0</valInt>
+        </autoarm_en>
+        <autoarm_v_clamp>
+            <longName>Clamp voltage setpoint</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Bus voltage the clamp holds at or below. Firmware limits it to [l_min_vin+2, l_max_vin-1]. Set it 2-3 V below the stock battery-regen-cut start and well under l_max_vin so the degradation chain is clamp -&gt; regen-cut -&gt; over-voltage fault.</description>
+            <cDefine></cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>450</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.5</stepDouble>
+            <valDouble>0</valDouble>
+            <vTxDoubleScale>1000</vTxDoubleScale>
+            <suffix> V</suffix>
+            <vTx>9</vTx>
+        </autoarm_v_clamp>
+        <autoarm_i_floor>
+            <longName>Bus-current floor</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Minimum (filtered) DC input current. 0 burns all regen as winding heat and never backfeeds the supply. A small positive floor keeps a series diode conducting.</description>
+            <cDefine></cDefine>
+            <editorDecimalsDouble>2</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>1000</maxDouble>
+            <minDouble>-1000</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>0.5</stepDouble>
+            <valDouble>0</valDouble>
+            <vTxDoubleScale>1000</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </autoarm_i_floor>
+        <autoarm_i_max>
+            <longName>Injected id ceiling</longName>
+            <type>1</type>
+            <transmittable>1</transmittable>
+            <description>Per-feature ceiling on injected d-axis current so an unattended clamp cannot silently own the full motor current limit. 0 uses the motor limit. Burnable clamp power ~= 1.5*Rs*i_max^2; size it &gt;= expected regen power.</description>
+            <cDefine></cDefine>
+            <editorDecimalsDouble>1</editorDecimalsDouble>
+            <editorScale>1</editorScale>
+            <editAsPercentage>0</editAsPercentage>
+            <maxDouble>1000</maxDouble>
+            <minDouble>0</minDouble>
+            <showDisplay>0</showDisplay>
+            <stepDouble>1</stepDouble>
+            <valDouble>0</valDouble>
+            <vTxDoubleScale>1000</vTxDoubleScale>
+            <suffix> A</suffix>
+            <vTx>9</vTx>
+        </autoarm_i_max>
+        <autoarm_clamp_en>
+            <longName>Enable voltage clamp</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>Enable the v_bus &lt;= v_clamp protection loop when auto-armed.</description>
+            <cDefine></cDefine>
+            <valInt>1</valInt>
+        </autoarm_clamp_en>
+        <autoarm_floor_en>
+            <longName>Enable current floor</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>Enable the i_bus &gt;= i_floor operating loop when auto-armed.</description>
+            <cDefine></cDefine>
+            <valInt>1</valInt>
+        </autoarm_floor_en>
+        <autoarm_allow_start>
+            <longName>Allow modulation restart</longName>
+            <type>5</type>
+            <transmittable>1</transmittable>
+            <description>Allow the clamp to (re)start modulation when the bus is pumped by an externally-spun motor (body-diode rectification at speed). Off by default.</description>
+            <cDefine></cDefine>
+            <valInt>0</valInt>
+        </autoarm_allow_start>
+    </Params>
+    <SerOrder>
+        <ser>c_dc_uf</ser>
+        <ser>autoarm_en</ser>
+        <ser>autoarm_v_clamp</ser>
+        <ser>autoarm_i_floor</ser>
+        <ser>autoarm_i_max</ser>
+        <ser>autoarm_clamp_en</ser>
+        <ser>autoarm_floor_en</ser>
+        <ser>autoarm_allow_start</ser>
+    </SerOrder>
+    <Grouping>
+        <group>
+            <groupName>Molten MOSFET Dyno</groupName>
+            <subgroup>
+                <subgroupName>Bus Clamp</subgroupName>
+                <subgroupParams>
+                    <param>::sep::DC link</param>
+                    <param>c_dc_uf</param>
+                    <param>::sep::Auto-arm at boot</param>
+                    <param>autoarm_en</param>
+                    <param>autoarm_v_clamp</param>
+                    <param>autoarm_i_floor</param>
+                    <param>autoarm_i_max</param>
+                    <param>autoarm_clamp_en</param>
+                    <param>autoarm_floor_en</param>
+                    <param>autoarm_allow_start</param>
+                </subgroupParams>
+            </subgroup>
+        </group>
+    </Grouping>
+</ConfigParams>
