@@ -763,15 +763,29 @@ void foc_run_fw(motor_all_state_t *motor, float dt) {
 // wn = sqrt(Ki/C), zeta = Kp/(2·sqrt(Ki·C)). The values below assume the
 // ~2 mF bench DC link: wn ≈ 71 Hz, zeta ≈ 1.1 (overdamped), safely under
 // the ~240 Hz v_bus filter pole. THEY SCALE WITH C — re-derive before a
-// larger DC link (planned: a conf frame carrying C_dc, firmware derives
-// gains). The floor plant is ~unity static (burning u bus-amps raises
-// i_bus by u within a current-loop time constant).
+// larger DC link. The clamp gains are now runtime-derived from the measured
+// C_dc (mm_config: Ki = wn²·C, Kp = 2ζ·wn·C at target wn = 2π·71 Hz, ζ = 1.1)
+// and live in mm_bus_clamp_state; the BC_CLAMP_* values below are the compiled
+// defaults for the ~2 mF bench link (C_dc = 0 keeps them). The floor plant is
+// ~unity static (burning u bus-amps raises i_bus by u within a current-loop
+// time constant), so the floor gains do not scale with C.
 #define BC_CLAMP_KP		2.0		// bus-A per V
 #define BC_CLAMP_KI		400.0	// bus-A per V·s
 #define BC_FLOOR_KP		0.5		// bus-A per bus-A
 #define BC_FLOOR_KI		500.0	// 1/s
 #define BC_IBUS_ALPHA	0.1		// ~240 Hz pole at 15 kHz control rate
 #define BC_SLEW_A_S		20000.0	// sanity bound on id_now only — NOT loop shaping
+
+// Molten MOSFET: seed the bus-clamp PI gains with the compiled bench defaults.
+// Called for each motor at mcpwm_foc_init so the clamp is functional before
+// (and independent of) any stored mm_config; mm_config overwrites the clamp
+// gains with C_dc-derived values when a capacitance is configured.
+void foc_bus_clamp_init_gains(mm_bus_clamp_state *bc) {
+	bc->clamp_kp = BC_CLAMP_KP;
+	bc->clamp_ki = BC_CLAMP_KI;
+	bc->floor_kp = BC_FLOOR_KP;
+	bc->floor_ki = BC_FLOOR_KI;
+}
 
 /**
  * Molten MOSFET: run the d-axis bus clamp — dissipative braking without a
@@ -826,20 +840,20 @@ void foc_run_bus_clamp(motor_all_state_t *motor, float dt) {
 	if (bc->floor_en) {
 		float e = bc->i_floor - bc->ibus_filter;
 		if ((e > 0.0 && !bc->saturated) || bc->floor_int > 0.0) {
-			bc->floor_int += e * BC_FLOOR_KI * dt;
+			bc->floor_int += e * bc->floor_ki * dt;
 		}
 		utils_truncate_number(&bc->floor_int, 0.0, u_max);
-		u_floor = BC_FLOOR_KP * e + bc->floor_int;
+		u_floor = bc->floor_kp * e + bc->floor_int;
 	}
 
 	float u_clamp = 0.0;
 	if (bc->clamp_en) {
 		float e = v - bc->v_clamp;
 		if ((e > 0.0 && !bc->saturated) || bc->clamp_int > 0.0) {
-			bc->clamp_int += e * BC_CLAMP_KI * dt;
+			bc->clamp_int += e * bc->clamp_ki * dt;
 		}
 		utils_truncate_number(&bc->clamp_int, 0.0, u_max);
-		u_clamp = BC_CLAMP_KP * e + bc->clamp_int;
+		u_clamp = bc->clamp_kp * e + bc->clamp_int;
 	}
 
 	float u = fmaxf(fmaxf(u_floor, u_clamp), 0.0);

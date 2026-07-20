@@ -53,6 +53,7 @@ float mcpwm_foc_get_id_dissipate_set(void);
 float mcpwm_foc_get_id_dissipate_now(void);
 bool mcpwm_foc_conf_bus_clamp(float v_clamp, float i_floor, float i_max, uint8_t flags);
 void mcpwm_foc_get_bus_clamp(mm_bus_clamp_state *out);
+void mcpwm_foc_set_bus_clamp_gains(float clamp_kp, float clamp_ki);
 void mcpwm_foc_bus_clamp_try_start(bool is_second_motor);
 int mcpwm_foc_set_tachometer_value(int steps);
 float mcpwm_foc_get_duty_cycle_set(void);

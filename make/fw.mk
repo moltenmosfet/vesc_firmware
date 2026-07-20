@@ -135,6 +135,7 @@ CSRC = $(STARTUPSRC) \
        irq_handlers.c \
        terminal.c \
        mm_commands.c \
+       mm_config.c \
        conf_general.c \
        timeout.c \
        flash_helper.c \

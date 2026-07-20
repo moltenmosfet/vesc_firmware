@@ -374,6 +374,7 @@ void mcpwm_foc_init(mc_configuration *conf_m1, mc_configuration *conf_m2) {
 	foc_precalc_values((motor_all_state_t*)&m_motor_1);
 	update_hfi_samples(m_motor_1.m_conf->foc_hfi_samples, &m_motor_1);
 	init_audio_state(&m_motor_1.m_audio);
+	foc_bus_clamp_init_gains((mm_bus_clamp_state*)&m_motor_1.m_bus_clamp);
 
 #ifdef HW_HAS_DUAL_MOTORS
 	memset((void*)&m_motor_2, 0, sizeof(motor_all_state_t));
@@ -386,6 +387,7 @@ void mcpwm_foc_init(mc_configuration *conf_m1, mc_configuration *conf_m2) {
 	foc_precalc_values((motor_all_state_t*)&m_motor_2);
 	update_hfi_samples(m_motor_2.m_conf->foc_hfi_samples, &m_motor_2);
 	init_audio_state(&m_motor_2.m_audio);
+	foc_bus_clamp_init_gains((mm_bus_clamp_state*)&m_motor_2.m_bus_clamp);
 #endif
 
 	virtual_motor_init(conf_m1);
@@ -1007,6 +1009,26 @@ bool mcpwm_foc_conf_bus_clamp(float v_clamp, float i_floor, float i_max, uint8_t
 
 void mcpwm_foc_get_bus_clamp(mm_bus_clamp_state *out) {
 	*out = *(mm_bus_clamp_state*)&get_motor_now()->m_bus_clamp;
+}
+
+/**
+ * Molten MOSFET: set the runtime voltage-clamp PI gains (derived from the
+ * configured DC-link capacitance by mm_config). The clamp is a bus-level
+ * singleton, so both motor instances get the same gains. Floor gains are
+ * C-independent and left at their init defaults. Non-positive arguments are
+ * ignored (keeps the compiled/init defaults). Each float store is atomic on
+ * the M4, so a live update while armed is safe.
+ */
+void mcpwm_foc_set_bus_clamp_gains(float clamp_kp, float clamp_ki) {
+	if (clamp_kp <= 0.0 || clamp_ki <= 0.0) {
+		return;
+	}
+	m_motor_1.m_bus_clamp.clamp_kp = clamp_kp;
+	m_motor_1.m_bus_clamp.clamp_ki = clamp_ki;
+#ifdef HW_HAS_DUAL_MOTORS
+	m_motor_2.m_bus_clamp.clamp_kp = clamp_kp;
+	m_motor_2.m_bus_clamp.clamp_ki = clamp_ki;
+#endif
 }
 
 /**

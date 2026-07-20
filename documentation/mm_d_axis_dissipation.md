@@ -201,3 +201,107 @@ brake pulse, and the standstill restart-gate refusal. Manual steps:
 8. Endurance: repeated spin/brake at max planned burn — temp foldback should
    shrink the budget (`saturated` earlier); disarm mid-burn; kill the host
    mid-burn (clamp must persist).
+
+# mm_config — the stored dyno config (VESC Tool page)
+
+`mm_config.c/.h` surfaces the dyno knobs as a **custom-config page in stock
+VESC Tool** (no forked GUI). It does two jobs: turn the one measurable plant
+parameter — the DC-link capacitance `C_dc` — into the clamp voltage-loop gains,
+and optionally auto-arm the bus clamp at boot. Registered from `main.c` next to
+`mm_commands_init()` via `conf_custom_add_config()`; stock firmware already
+routes the `COMM_*_CUSTOM_CONFIG*` packets to `conf_custom_process_cmd()`, so no
+comms plumbing is added.
+
+## Parameters
+
+| Field | Type | Meaning |
+|---|---|---|
+| `c_dc_uf` | float | Total DC-link bus capacitance (µF). Firmware derives the clamp gains from it. **0 = keep the compiled 2 mF bench gains.** |
+| `autoarm_en` | bool | Apply the stored clamp config at every boot. Default **off** (armed-only posture). |
+| `autoarm_v_clamp` | float | Boot clamp voltage setpoint (V). |
+| `autoarm_i_floor` | float | Boot bus-current floor (A). |
+| `autoarm_i_max` | float | Boot injected-id ceiling (A). |
+| `autoarm_clamp_en` / `_floor_en` / `_allow_start` | bool | Which loops to enable when auto-armed. |
+
+Each parameter carries a `<description>` that renders as the VESC Tool tooltip —
+that tooltip text is the primary commissioning documentation surface, so keep it
+accurate.
+
+## Gain derivation
+
+The clamp voltage loop's plant is the DC link (`C·dv/dt = i_excess − u`), so with
+a PI in bus-amps `wn = √(Ki/C)`, `ζ = Kp/(2√(Ki·C))`. Fixing the design targets
+`wn = 2π·71 Hz` (kept ≤ ~100 Hz to stay 2.5–3× under the ~240 Hz `v_bus` filter
+pole) and `ζ = 1.1`, the firmware computes on config-set / boot:
+
+```
+Ki = wn²·C          Kp = 2·ζ·wn·C          (C = c_dc_uf · 1e-6)
+```
+
+At `C = 2 mF` this reproduces the compiled defaults (`Ki ≈ 400`, `Kp ≈ 2.0`).
+The gains live in `mm_bus_clamp_state` (`clamp_kp/clamp_ki`), seeded to the
+compiled defaults at `mcpwm_foc_init` and overwritten by
+`mcpwm_foc_set_bus_clamp_gains()`; the fast loop never re-derives per cycle. The
+**floor** loop is ~unity-static and does **not** scale with C — its gains stay at
+the compiled defaults. `c_dc_uf = 0` leaves everything at the bench defaults.
+
+> Why this matters: smaller C than assumed is faster + more damped (safe — the
+> 660 µF bench bank runs at wn ≈ 124 Hz, ζ ≈ 1.9 with the 2 mF defaults, which is
+> why every hold pinned cleanly). **Larger** C than assumed is slower + under-
+> damped — the dangerous direction, and exactly what the high-voltage rig brings.
+> Measure and enter `C_dc` before the rig.
+
+## Persistence
+
+Fixed layout in the custom-EEPROM space (256 × 32-bit slots), based at address
+**200** to stay clear of the erockit/finn app vars and the balance c_lib — none
+of which are in the dyno build. Slot 200 holds a `'MMCF'` validity magic written
+**last** (a partial write is never read as valid); 201–205 hold `c_dc_uf`, a
+flags word, and `v_clamp`/`i_floor`/`i_max`. Absent/invalid magic → compiled
+defaults.
+
+## Descriptor + signature (regeneration)
+
+VESC Tool renders the page from an embedded XML descriptor
+(`mm_config_xml[]`, a 4-byte big-endian length + zlib-deflated settings XML) and
+computes a **config signature** (`crc32c` over the serialize order of
+`name+type+vTx+enumNames`) that it prepends to every `SET`. `mm_config.c`'s
+`confparser`-style `get_cfg`/`set_cfg` and `MM_CONFIG_SIGNATURE` must match it
+exactly, or writes are silently rejected. All three are generated together by
+`documentation/mm_config_xml_gen.py` (which reproduces the known
+`BALANCE_CONFIG_SIGNATURE` as its self-test). **Change the parameter set only in
+that script, re-run it, and paste the new signature + blob** — never hand-edit
+the blob or the serialize order.
+
+## Commissioning checklist
+
+1. **The motor-detection wizard silently resets the whole protection stack** —
+   `l_in`/`l_in_min` limits, `l_max_vin`, `l_battery_regen_cut`, *and* the clamp
+   gains (back to the 2 mF bench defaults). After **every** wizard run: re-apply
+   the mcconf protection limits, then run `mm_config apply` (or reboot) to
+   re-derive the clamp gains and re-evaluate auto-arm.
+2. **Rs** (used for the square-law linearization) comes from the detection
+   `p_copper` method; confirm `foc_motor_r` looks sane for the absorber.
+3. **Capacity sizing law:** burnable clamp power `P = 1.5·Rs·i_max²`. Size
+   `i_max` so `P ≥ expected regen power`. Worked bench numbers (Rs ≈ 37 mΩ EUC
+   hub): `i_max 40 → 89 W`, `i_max 50 → 139 W`. A starved `i_max` degrades
+   gracefully to the regen-cut → OV-fault chain rather than clamping.
+4. **Regen-cut has no CAN setter** — set `l_battery_regen_cut_start/end` in VESC
+   Tool (start ≈ `v_clamp + 2`, end ≈ `v_clamp + 5`, band ≥ 2–3 V) so the
+   degradation chain is clamp → regen-cut → OV fault.
+5. **Over-voltage fault enum is `1`** (`FAULT_CODE_OVER_VOLTAGE`), not 8 — watch
+   for `1` when validating the backstop.
+6. Auto-arm at boot is refused unless `i_max > 0` (an unattended clamp must never
+   own the full motor limit) and, with the voltage clamp enabled, `v_clamp > 0`.
+
+## Bench validation (the knob is live)
+
+With the hardware still rigged (EUC hub, 36 V PSU behind a diode, 42 V catch):
+set `c_dc_uf = 660` (the true bench bank, 3 × 220 µF) in VESC Tool → confirm the
+clamp still pins at setpoint under the reference stimulus (brake 6 A from 9360
+erpm, `i_max 50`, `v_clamp 38` → pinned 38.0 V, `id ≈ 43 A`). Then set a
+deliberately wrong `c_dc_uf = 5000` → the derived gains slow down and the hold
+becomes visibly sluggish, proving the knob feeds the loop. `mm_config` (terminal)
+prints the live `clamp_kp/clamp_ki`; the CAN clamp status (203) shows the hold.
+Rebuild/flash: `make 60 USE_LISPBM=0`, flash via VESC Tool (hw "60"), then re-run
+`can_bench_check` + `can_clamp_check can0 100 36`.

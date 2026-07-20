@@ -28,6 +28,7 @@
 #include "commands.h"
 #include "mc_interface.h"
 #include "mcpwm_foc.h"
+#include "mm_config.h"
 #include "terminal.h"
 #include "timeout.h"
 #include "utils_math.h"
@@ -107,6 +108,35 @@ static void mm_clamp_cmd(int argc, const char **argv) {
 	}
 }
 
+// Print the stored dyno config + live clamp gains, or re-apply it. "apply"
+// re-pushes the C_dc-derived gains and re-evaluates auto-arm — run it after the
+// motor-detection wizard, which resets the clamp gains to their bench defaults
+// along with the rest of the protection stack.
+static void mm_config_cmd(int argc, const char **argv) {
+	if (argc == 2 && strcmp(argv[1], "apply") == 0) {
+		mm_config_apply();
+		commands_printf("mm_config: re-applied (gains pushed, auto-arm evaluated)\n");
+		return;
+	}
+	if (argc == 1) {
+		const mm_config_t *c = mm_config_get();
+		mm_bus_clamp_state bc;
+		mcpwm_foc_get_bus_clamp(&bc);
+		commands_printf("c_dc_uf  : %.1f uF%s", (double)c->c_dc_uf,
+				c->c_dc_uf < 1.0 ? "  (0 -> compiled 2 mF clamp gains)" : "");
+		commands_printf("autoarm  : %d (clamp %d, floor %d, allow_start %d)",
+				c->autoarm_en, c->autoarm_clamp_en, c->autoarm_floor_en,
+				c->autoarm_allow_start);
+		commands_printf("v_clamp  : %.1f V", (double)c->autoarm_v_clamp);
+		commands_printf("i_floor  : %.2f A", (double)c->autoarm_i_floor);
+		commands_printf("i_max    : %.1f A", (double)c->autoarm_i_max);
+		commands_printf("clamp PI : Kp %.4f  Ki %.1f  (live in motor)\n",
+				(double)bc.clamp_kp, (double)bc.clamp_ki);
+		return;
+	}
+	commands_printf("Usage: mm_config to print state, or mm_config apply\n");
+}
+
 void mm_commands_init(void) {
 	terminal_register_command_callback(
 			"mm_diss",
@@ -119,4 +149,10 @@ void mm_commands_init(void) {
 			"Molten MOSFET: arm the d-axis bus clamp (flags bit0 clamp, bit1 floor, bit2 allow_start; 0/off = disarm)",
 			"[v_clamp] [i_floor] [i_max] [flags]",
 			mm_clamp_cmd);
+
+	terminal_register_command_callback(
+			"mm_config",
+			"Molten MOSFET: print the stored dyno config + live clamp gains; 'apply' re-applies after motor detection",
+			"[apply]",
+			mm_config_cmd);
 }

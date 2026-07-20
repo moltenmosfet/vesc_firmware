@@ -150,6 +150,15 @@ typedef struct {
 	float v_clamp;      // V, clamp setpoint
 	float i_floor;      // bus A, floor setpoint (0 = never backfeed the supply)
 	float i_max;        // injected |id| ceiling, A (0 = motor limit)
+	// PI gains. The clamp gains scale with the DC-link capacitance (set from
+	// mm_config's C_dc knob, wn = sqrt(clamp_ki/C)); the floor gains are
+	// C-independent. Initialised to the compiled BC_* defaults at motor setup
+	// (foc_bus_clamp_init_gains) so the clamp works even without a stored
+	// config, and re-asserted to defaults on any motor re-init.
+	float clamp_kp;     // bus-A per V
+	float clamp_ki;     // bus-A per V·s
+	float floor_kp;     // bus-A per bus-A
+	float floor_ki;     // 1/s
 	// Controller state (reset on fault/stop/disarm)
 	float ibus_filter;  // dedicated LP of the i_bus estimate
 	float floor_int;    // floor integrator, bus A
@@ -293,6 +302,7 @@ float foc_correct_encoder(float obs_angle, float enc_angle, float speed, float s
 float foc_correct_hall(float angle, float dt, motor_all_state_t *motor, int hall_val);
 void foc_run_fw(motor_all_state_t *motor, float dt);
 void foc_run_bus_clamp(motor_all_state_t *motor, float dt);
+void foc_bus_clamp_init_gains(mm_bus_clamp_state *bc);
 void foc_hfi_adjust_angle(float ang_err, motor_all_state_t *motor, float dt);
 void foc_precalc_values(motor_all_state_t *motor);
 

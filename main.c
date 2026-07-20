@@ -41,6 +41,7 @@
 #include "commands.h"
 #include "timeout.h"
 #include "mm_commands.h"
+#include "mm_config.h"
 #include "encoder/encoder.h"
 #include "pwm_servo.h"
 #include "utils_math.h"
@@ -396,6 +397,9 @@ int main(void) {
 
 	// Molten MOSFET: bench terminal commands (mm_diss, mm_clamp).
 	mm_commands_init();
+	// Molten MOSFET: load stored dyno config (C_dc-derived clamp gains +
+	// optional auto-arm) and register the VESC Tool custom-config page.
+	mm_config_init();
 
 #if HAS_BLACKMAGIC
 	bm_init();
